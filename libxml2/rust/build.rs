@@ -539,6 +539,18 @@ fn compile_c_library(c_files: &[String], lib_name: &str) -> Result<(), Box<dyn s
             println!("cargo:warning=Creating dynamic library for differential testing");
             
             let mut gcc_cmd = std::process::Command::new("gcc");
+            
+            // Use platform-specific linker flags
+            #[cfg(target_os = "macos")]
+            gcc_cmd.args(&[
+                "-shared",
+                "-fPIC",
+                "-o", dynamic_lib_path.to_str().unwrap(),
+                "-Wl,-force_load", static_lib_path.to_str().unwrap(),
+                "-lm", "-lpthread", "-liconv"
+            ]);
+            
+            #[cfg(not(target_os = "macos"))]
             gcc_cmd.args(&[
                 "-shared",
                 "-fPIC",
