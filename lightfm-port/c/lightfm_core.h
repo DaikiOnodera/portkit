@@ -58,6 +58,7 @@ CSRMatrix* csr_matrix_new(int rows, int cols, int nnz);
 void csr_matrix_free(CSRMatrix *matrix);
 FastLightFM* lightfm_new(int n_user_features, int n_item_features, int no_components);
 void lightfm_free(FastLightFM *model);
+void initialize_embeddings(FastLightFM *model);
 
 // Core training functions
 int fit_logistic(
@@ -203,6 +204,25 @@ double update_features(
 float sigmoid(float v);
 int in_positives(int item_id, int user_id, CSRMatrix *interactions);
 int sample_range(int min_val, int max_val, unsigned int *seed);
+
+// WARP gradient update function
+void warp_update(
+    double loss,
+    CSRMatrix *item_features,
+    CSRMatrix *user_features,
+    int user_id,
+    int positive_item_id,
+    int negative_item_id,
+    float *user_repr,
+    float *pos_it_repr,
+    float *neg_it_repr,
+    FastLightFM *lightfm,
+    double item_alpha,
+    double user_alpha
+);
+
+// Regularization function
+void regularize(FastLightFM *lightfm, double item_alpha, double user_alpha);
 
 // Evaluation functions
 float precision_at_k(

@@ -79,6 +79,9 @@ FastLightFM* lightfm_new(int n_user_features, int n_item_features, int no_compon
     model->item_scale = 1.0;
     model->user_scale = 1.0;
     
+    // Initialize embeddings with small random values
+    initialize_embeddings(model);
+    
     return model;
 }
 
@@ -118,6 +121,40 @@ void lightfm_free(FastLightFM *model) {
     free(model->user_bias_momentum);
     
     free(model);
+}
+
+// Initialize embeddings with small random values
+void initialize_embeddings(FastLightFM *model) {
+    unsigned int seed = 42;  // Fixed seed for reproducibility
+    const float scale = 0.05f;  // Small initialization scale
+    
+    // Initialize item embeddings
+    for (int i = 0; i < model->n_item_features; i++) {
+        for (int j = 0; j < model->no_components; j++) {
+            // Generate random number between -scale and scale
+            float random_val = (float)rand_r(&seed) / RAND_MAX;
+            model->item_features[i][j] = (random_val * 2.0f - 1.0f) * scale;
+        }
+        // Initialize gradients to small values for AdaGrad
+        for (int j = 0; j < model->no_components; j++) {
+            model->item_feature_gradients[i][j] = 1e-4f;
+        }
+        model->item_bias_gradients[i] = 1e-4f;
+    }
+    
+    // Initialize user embeddings
+    for (int i = 0; i < model->n_user_features; i++) {
+        for (int j = 0; j < model->no_components; j++) {
+            // Generate random number between -scale and scale
+            float random_val = (float)rand_r(&seed) / RAND_MAX;
+            model->user_features[i][j] = (random_val * 2.0f - 1.0f) * scale;
+        }
+        // Initialize gradients to small values for AdaGrad
+        for (int j = 0; j < model->no_components; j++) {
+            model->user_feature_gradients[i][j] = 1e-4f;
+        }
+        model->user_bias_gradients[i] = 1e-4f;
+    }
 }
 
 // Helper functions
@@ -196,7 +233,7 @@ float compute_prediction_from_repr(
     return prediction;
 }
 
-// Basic WARP implementation (simplified)
+// Full WARP implementation
 int fit_warp(
     CSRMatrix *item_features,
     CSRMatrix *user_features,
@@ -214,44 +251,80 @@ int fit_warp(
     unsigned int *random_states,
     int num_examples
 ) {
-    // This is a simplified implementation for demonstration
-    // A full implementation would require the complete WARP algorithm
-    
     float *user_repr = (float*)malloc((lightfm->no_components + 1) * sizeof(float));
-    float *item_repr = (float*)malloc((lightfm->no_components + 1) * sizeof(float));
-    float *neg_item_repr = (float*)malloc((lightfm->no_components + 1) * sizeof(float));
+    float *pos_it_repr = (float*)malloc((lightfm->no_components + 1) * sizeof(float));
+    float *neg_it_repr = (float*)malloc((lightfm->no_components + 1) * sizeof(float));
+    
+    const double MAX_LOSS = 10.0;
+    const double MAX_REG_SCALE = 1000000.0;
+    
+    lightfm->learning_rate = learning_rate;
     
     for (int i = 0; i < num_examples; i++) {
-        int user_id = user_ids[i];
-        int item_id = item_ids[i];
+        int row = shuffle_indices[i];
+        int user_id = user_ids[row];
+        int positive_item_id = item_ids[row];
         
-        // Compute user and item representations
+        // Skip if not a positive example
+        if (Y[row] <= 0) continue;
+        
+        float weight = sample_weight[row];
+        
+        // Compute user and positive item representations
         compute_representation(user_features, lightfm->user_features, lightfm->user_biases,
                              lightfm, user_id, lightfm->user_scale, user_repr);
         compute_representation(item_features, lightfm->item_features, lightfm->item_biases,
-                             lightfm, item_id, lightfm->item_scale, item_repr);
+                             lightfm, positive_item_id, lightfm->item_scale, pos_it_repr);
         
-        // Sample negative item
-        int neg_item = sample_range(0, item_features->rows, &random_states[0]);
-        while (in_positives(neg_item, user_id, interactions)) {
-            neg_item = sample_range(0, item_features->rows, &random_states[0]);
+        double positive_prediction = compute_prediction_from_repr(user_repr, pos_it_repr, lightfm->no_components);
+        
+        int sampled = 0;
+        while (sampled < lightfm->max_sampled) {
+            sampled++;
+            
+            // Sample negative item
+            int negative_item_id = rand_r(&random_states[0]) % item_features->rows;
+            
+            compute_representation(item_features, lightfm->item_features, lightfm->item_biases,
+                                 lightfm, negative_item_id, lightfm->item_scale, neg_it_repr);
+            
+            double negative_prediction = compute_prediction_from_repr(user_repr, neg_it_repr, lightfm->no_components);
+            
+            // Check if we found a violating negative example
+            if (negative_prediction > positive_prediction - 1.0) {
+                // Skip if negative is actually positive
+                if (in_positives(negative_item_id, user_id, interactions)) {
+                    continue;
+                }
+                
+                // Compute WARP loss with importance weighting
+                double loss = weight * log(fmax(1.0, floor((double)(item_features->rows - 1) / sampled)));
+                
+                // Clip gradients for numerical stability
+                if (loss > MAX_LOSS) {
+                    loss = MAX_LOSS;
+                }
+                
+                // Apply WARP gradient updates
+                warp_update(loss, item_features, user_features, user_id, positive_item_id,
+                           negative_item_id, user_repr, pos_it_repr, neg_it_repr, lightfm,
+                           item_alpha, user_alpha);
+                break;
+            }
         }
         
-        compute_representation(item_features, lightfm->item_features, lightfm->item_biases,
-                             lightfm, neg_item, lightfm->item_scale, neg_item_repr);
-        
-        // Compute predictions
-        float pos_prediction = compute_prediction_from_repr(user_repr, item_repr, lightfm->no_components);
-        float neg_prediction = compute_prediction_from_repr(user_repr, neg_item_repr, lightfm->no_components);
-        
-        // WARP loss and gradient computation would go here
-        // This is a simplified version for demonstration
-        (void)pos_prediction; (void)neg_prediction; // Suppress unused variable warnings
+        // Apply regularization if scales get too large
+        if (lightfm->item_scale > MAX_REG_SCALE || lightfm->user_scale > MAX_REG_SCALE) {
+            regularize(lightfm, item_alpha, user_alpha);
+        }
     }
     
     free(user_repr);
-    free(item_repr);
-    free(neg_item_repr);
+    free(pos_it_repr);
+    free(neg_it_repr);
+    
+    // Final regularization
+    regularize(lightfm, item_alpha, user_alpha);
     
     return 0;
 }
@@ -388,10 +461,39 @@ double update_biases(
     float rho,
     float eps
 ) {
-    (void)feature_indices; (void)start; (void)stop; (void)biases;
-    (void)gradients; (void)momentum; (void)gradient; (void)adadelta;
-    (void)learning_rate; (void)alpha; (void)rho; (void)eps;
-    return 0.0; /* Not implemented */
+    double sum_learning_rate = 0.0;
+    
+    if (adadelta) {
+        for (int i = start; i < stop; i++) {
+            int feature = feature_indices->indices[i];
+            float feature_weight = feature_indices->data[i];
+            
+            gradients[feature] = rho * gradients[feature] + (1 - rho) * pow(feature_weight * gradient, 2);
+            double local_learning_rate = sqrt(momentum[feature] + eps) / sqrt(gradients[feature] + eps);
+            double update = local_learning_rate * gradient * feature_weight;
+            momentum[feature] = rho * momentum[feature] + (1 - rho) * update * update;
+            biases[feature] -= update;
+            
+            // Lazy regularization
+            biases[feature] *= (1.0 + alpha * local_learning_rate);
+            sum_learning_rate += local_learning_rate;
+        }
+    } else {
+        for (int i = start; i < stop; i++) {
+            int feature = feature_indices->indices[i];
+            float feature_weight = feature_indices->data[i];
+            
+            double local_learning_rate = learning_rate / sqrt(gradients[feature]);
+            biases[feature] -= local_learning_rate * feature_weight * gradient;
+            gradients[feature] += pow(gradient * feature_weight, 2);
+            
+            // Lazy regularization
+            biases[feature] *= (1.0 + alpha * local_learning_rate);
+            sum_learning_rate += local_learning_rate;
+        }
+    }
+    
+    return sum_learning_rate;
 }
 
 double update_features(
@@ -409,10 +511,136 @@ double update_features(
     float rho,
     float eps
 ) {
-    (void)feature_indices; (void)features; (void)gradients; (void)momentum;
-    (void)component; (void)start; (void)stop; (void)gradient; (void)adadelta;
-    (void)learning_rate; (void)alpha; (void)rho; (void)eps;
-    return 0.0; /* Not implemented */
+    double sum_learning_rate = 0.0;
+    
+    if (adadelta) {
+        for (int i = start; i < stop; i++) {
+            int feature = feature_indices->indices[i];
+            float feature_weight = feature_indices->data[i];
+            
+            gradients[feature][component] = rho * gradients[feature][component] + 
+                                          (1 - rho) * pow(feature_weight * gradient, 2);
+            double local_learning_rate = sqrt(momentum[feature][component] + eps) / 
+                                       sqrt(gradients[feature][component] + eps);
+            double update = local_learning_rate * gradient * feature_weight;
+            momentum[feature][component] = rho * momentum[feature][component] + 
+                                         (1 - rho) * update * update;
+            features[feature][component] -= update;
+            
+            // Lazy regularization
+            features[feature][component] *= (1.0 + alpha * local_learning_rate);
+            sum_learning_rate += local_learning_rate;
+        }
+    } else {
+        for (int i = start; i < stop; i++) {
+            int feature = feature_indices->indices[i];
+            float feature_weight = feature_indices->data[i];
+            
+            double local_learning_rate = learning_rate / sqrt(gradients[feature][component]);
+            features[feature][component] -= local_learning_rate * feature_weight * gradient;
+            gradients[feature][component] += pow(gradient * feature_weight, 2);
+            
+            // Lazy regularization
+            features[feature][component] *= (1.0 + alpha * local_learning_rate);
+            sum_learning_rate += local_learning_rate;
+        }
+    }
+    
+    return sum_learning_rate;
+}
+
+// WARP gradient update function
+void warp_update(
+    double loss,
+    CSRMatrix *item_features,
+    CSRMatrix *user_features,
+    int user_id,
+    int positive_item_id,
+    int negative_item_id,
+    float *user_repr,
+    float *pos_it_repr,
+    float *neg_it_repr,
+    FastLightFM *lightfm,
+    double item_alpha,
+    double user_alpha
+) {
+    double avg_learning_rate = 0.0;
+    
+    // Get the iteration ranges for features
+    int positive_item_start = item_features->indptr[positive_item_id];
+    int positive_item_stop = item_features->indptr[positive_item_id + 1];
+    int negative_item_start = item_features->indptr[negative_item_id];
+    int negative_item_stop = item_features->indptr[negative_item_id + 1];
+    int user_start = user_features->indptr[user_id];
+    int user_stop = user_features->indptr[user_id + 1];
+    
+    // Update biases
+    avg_learning_rate += update_biases(item_features, positive_item_start, positive_item_stop,
+                                     lightfm->item_biases, lightfm->item_bias_gradients,
+                                     lightfm->item_bias_momentum, -loss, lightfm->adadelta,
+                                     lightfm->learning_rate, item_alpha, lightfm->rho, lightfm->eps);
+    
+    avg_learning_rate += update_biases(item_features, negative_item_start, negative_item_stop,
+                                     lightfm->item_biases, lightfm->item_bias_gradients,
+                                     lightfm->item_bias_momentum, loss, lightfm->adadelta,
+                                     lightfm->learning_rate, item_alpha, lightfm->rho, lightfm->eps);
+    
+    avg_learning_rate += update_biases(user_features, user_start, user_stop,
+                                     lightfm->user_biases, lightfm->user_bias_gradients,
+                                     lightfm->user_bias_momentum, loss, lightfm->adadelta,
+                                     lightfm->learning_rate, user_alpha, lightfm->rho, lightfm->eps);
+    
+    // Update latent representations
+    for (int i = 0; i < lightfm->no_components; i++) {
+        float user_component = user_repr[i];
+        float positive_item_component = pos_it_repr[i];
+        float negative_item_component = neg_it_repr[i];
+        
+        avg_learning_rate += update_features(item_features, lightfm->item_features,
+                                           lightfm->item_feature_gradients, lightfm->item_feature_momentum,
+                                           i, positive_item_start, positive_item_stop,
+                                           -loss * user_component, lightfm->adadelta,
+                                           lightfm->learning_rate, item_alpha, lightfm->rho, lightfm->eps);
+        
+        avg_learning_rate += update_features(item_features, lightfm->item_features,
+                                           lightfm->item_feature_gradients, lightfm->item_feature_momentum,
+                                           i, negative_item_start, negative_item_stop,
+                                           loss * user_component, lightfm->adadelta,
+                                           lightfm->learning_rate, item_alpha, lightfm->rho, lightfm->eps);
+        
+        avg_learning_rate += update_features(user_features, lightfm->user_features,
+                                           lightfm->user_feature_gradients, lightfm->user_feature_momentum,
+                                           i, user_start, user_stop,
+                                           loss * (negative_item_component - positive_item_component),
+                                           lightfm->adadelta, lightfm->learning_rate, user_alpha,
+                                           lightfm->rho, lightfm->eps);
+    }
+    
+    // Update regularization scales
+    lightfm->item_scale *= (1.0 + item_alpha * avg_learning_rate);
+    lightfm->user_scale *= (1.0 + user_alpha * avg_learning_rate);
+}
+
+// Regularization function
+void regularize(FastLightFM *lightfm, double item_alpha, double user_alpha) {
+    // Apply regularization to all features
+    for (int i = 0; i < lightfm->n_item_features; i++) {
+        for (int j = 0; j < lightfm->no_components; j++) {
+            lightfm->item_features[i][j] *= lightfm->item_scale;
+        }
+        lightfm->item_biases[i] *= lightfm->item_scale;
+    }
+    
+    for (int i = 0; i < lightfm->n_user_features; i++) {
+        for (int j = 0; j < lightfm->no_components; j++) {
+            lightfm->user_features[i][j] *= lightfm->user_scale;
+        }
+        lightfm->user_biases[i] *= lightfm->user_scale;
+    }
+    
+    // Reset scales
+    lightfm->item_scale = 1.0;
+    lightfm->user_scale = 1.0;
 }
 
 float precision_at_k(
