@@ -1,0 +1,40 @@
+{
+    "name": "lightfm/lightfm-php",
+    "description": "PHP port of the LightFM Python library using FFI bindings to C implementation for hybrid recommender systems",
+    "type": "library",
+    "keywords": ["machine-learning", "recommender-systems", "collaborative-filtering", "matrix-factorization", "ffi"],
+    "license": "Apache-2.0",
+    "authors": [
+        {
+            "name": "LightFM PHP Contributors",
+            "email": "contributors@lightfm-php.org"
+        }
+    ],
+    "require": {
+        "php": ">=8.0",
+        "ext-ffi": "*"
+    },
+    "require-dev": {
+        "phpunit/phpunit": "^9.0|^10.0|^11.0"
+    },
+    "autoload": {
+        "psr-0": {
+            "": "src/"
+        }
+    },
+    "autoload-dev": {
+        "psr-4": {
+            "LightFM\\Tests\\": "tests/"
+        }
+    },
+    "minimum-stability": "stable",
+    "prefer-stable": true,
+    "config": {
+        "optimize-autoloader": true,
+        "sort-packages": true
+    },
+    "scripts": {
+        "test": "phpunit",
+        "test-coverage": "phpunit --coverage-html coverage"
+    }
+}

@@ -25,7 +25,7 @@ def compile_project(config: "ProjectConfig") -> None:
 def call_claude_code(prompt: str, working_dir: Path) -> None:
     """Call Claude Code as a Unix-style utility with the given prompt."""
     print(f"Calling Claude Code with prompt: {prompt}")
-    claude = "/Users/power/.claude/local/claude"
+    claude = "/Users/daikionodera/.nvm/versions/node/v22.9.0/bin/claude"
 
     subprocess.run(
         [

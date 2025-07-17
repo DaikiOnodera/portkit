@@ -1,0 +1,19 @@
+{
+    "name": "test/lightfm-php-test",
+    "description": "Test project for lightfm-php package installation",
+    "type": "project",
+    "require": {
+        "php": ">=8.0"
+    },
+    "repositories": [
+        {
+            "type": "path",
+            "url": "../lightfm-php"
+        }
+    ],
+    "require": {
+        "lightfm/lightfm-php": "*"
+    },
+    "minimum-stability": "dev",
+    "prefer-stable": true
+}
